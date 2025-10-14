@@ -1,0 +1,46 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  release:
+    types: [published]
+
+jobs:
+  lint-build:
+    name: Lint & Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+      - name: Lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: v1.56
+      - name: Build
+        run: |
+          go build -o gpu-tracker ./cmd/gpu-tracker
+
+  release:
+    name: Build & Release Binary
+    runs-on: ubuntu-latest
+    if: github.event_name == 'release'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+      - name: Build (Linux amd64)
+        run: |
+          go build -o gpu-tracker ./cmd/gpu-tracker
+      - name: Upload Binary to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            gpu-tracker
