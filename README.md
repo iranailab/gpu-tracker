@@ -143,6 +143,6 @@ See [LICENSE](./LICENSE) for details.
 Developed by [Alireza Parvaresh](https://github.com/parvvaresg)
 Contributions welcome!
 
-Made with love in Iran ❤️
+Made with love in Iran ❤️🇮🇷
 ---
 
