@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"gpuwatch/internal/sampler"
@@ -11,26 +12,35 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// tick interval during live auto-recording
-const sampleInterval = 5 * time.Second
+type Config struct {
+	SampleInterval time.Duration
+	MaxTemp        float64
+	MaxMem         float64
+}
 
 type model struct {
-	db           *store.DB
-	live         bool
-	autoRecord   bool
-	width        int
-	height       int
+	db         *store.DB
+	config     Config
+	live       bool
+	autoRecord bool
+	width      int
+	height     int
 
-	curr         types.Snapshot // live or currently viewed snapshot
-	status       string
-	err          error
+	curr   types.Snapshot // live or currently viewed snapshot
+	status string
+	err    error
 
 	// history
-	historyDate  time.Time
-	metas        []store.SnapshotMeta
-	index        int // index into metas for current snapshot
+	historyDate time.Time
+	metas       []store.SnapshotMeta
+	index       int // index into metas for current snapshot
 
-	showHelp     bool
+	showHelp bool
+
+	// filters
+	filterUser string
+	filterGPU  int // -1 means all GPUs
+	sortByMem  bool
 }
 
 type (
@@ -41,12 +51,22 @@ type (
 )
 
 func New(db *store.DB) model {
+	return NewWithConfig(db, Config{
+		SampleInterval: 5 * time.Second,
+		MaxTemp:        90.0,
+		MaxMem:         95.0,
+	})
+}
+
+func NewWithConfig(db *store.DB, config Config) model {
 	loc := time.Now().Location()
 	return model{
-		db: db,
-		live: true,
-		autoRecord: true,
+		db:          db,
+		config:      config,
+		live:        true,
+		autoRecord:  true,
 		historyDate: time.Now().In(loc),
+		filterGPU:   -1, // show all GPUs by default
 	}
 }
 
@@ -56,18 +76,22 @@ func (m model) Init() tea.Cmd {
 
 func (m model) tickIfNeeded() tea.Cmd {
 	if m.live && m.autoRecord {
-		return tea.Tick(sampleInterval, func(time.Time) tea.Msg { return m.doSample() })
+		return tea.Tick(m.config.SampleInterval, func(time.Time) tea.Msg { return m.doSample() })
 	}
 	return nil
 }
 
 func (m model) doSample() tea.Msg {
 	s, err := sampler.Sample()
-	if err != nil { return errorMsg{err} }
+	if err != nil {
+		return errorMsg{err}
+	}
 	// Save when auto record
 	if m.autoRecord {
 		id, err := m.db.SaveSnapshot(s)
-		if err != nil { return errorMsg{err} }
+		if err != nil {
+			return errorMsg{err}
+		}
 		s.ID = id
 		return refreshMsg{snap: s}
 	}
@@ -77,7 +101,9 @@ func (m model) doSample() tea.Msg {
 func (m model) refreshOnce() tea.Cmd {
 	return func() tea.Msg {
 		s, err := sampler.Sample()
-		if err != nil { return errorMsg{err} }
+		if err != nil {
+			return errorMsg{err}
+		}
 		return refreshMsg{snap: s}
 	}
 }
@@ -85,17 +111,23 @@ func (m model) refreshOnce() tea.Cmd {
 func (m model) loadMetasCmd(day time.Time) tea.Cmd {
 	return func() tea.Msg {
 		metas, err := m.db.ListSnapshotsByDate(day)
-		if err != nil { return errorMsg{err} }
+		if err != nil {
+			return errorMsg{err}
+		}
 		return metasMsg{metas: metas}
 	}
 }
 
 func (m model) loadByMetaCmd(idx int) tea.Cmd {
-	if idx < 0 || idx >= len(m.metas) { return nil }
+	if idx < 0 || idx >= len(m.metas) {
+		return nil
+	}
 	id := m.metas[idx].ID
 	return func() tea.Msg {
 		s, err := m.db.LoadSnapshot(id)
-		if err != nil { return errorMsg{err} }
+		if err != nil {
+			return errorMsg{err}
+		}
 		return refreshMsg{snap: s}
 	}
 }
@@ -148,9 +180,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "s": // save snapshot immediately
 			if m.live {
 				return m, func() tea.Msg {
-					if m.curr.TS.IsZero() { return errorMsg{fmt.Errorf("no current snapshot")}}
+					if m.curr.TS.IsZero() {
+						return errorMsg{fmt.Errorf("no current snapshot")}
+					}
 					id, err := m.db.SaveSnapshot(m.curr)
-					if err != nil { return errorMsg{err} }
+					if err != nil {
+						return errorMsg{err}
+					}
 					return savedMsg{id: id}
 				}
 			}
@@ -168,19 +204,130 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.refreshOnce()
 		case "left":
 			if !m.live && len(m.metas) > 0 {
-				if m.index > 0 { m.index-- }
+				if m.index > 0 {
+					m.index--
+				}
 				return m, m.loadByMetaCmd(m.index)
 			}
 		case "right":
 			if !m.live && len(m.metas) > 0 {
-				if m.index < len(m.metas)-1 { m.index++ }
+				if m.index < len(m.metas)-1 {
+					m.index++
+				}
 				return m, m.loadByMetaCmd(m.index)
 			}
 		case "up":
-			if !m.live { m.historyDate = m.historyDate.AddDate(0,0,-1); return m, m.loadMetasCmd(m.historyDate) }
+			if !m.live {
+				m.historyDate = m.historyDate.AddDate(0, 0, -1)
+				return m, m.loadMetasCmd(m.historyDate)
+			}
 		case "down":
-			if !m.live { m.historyDate = m.historyDate.AddDate(0,0,1); return m, m.loadMetasCmd(m.historyDate) }
+			if !m.live {
+				m.historyDate = m.historyDate.AddDate(0, 0, 1)
+				return m, m.loadMetasCmd(m.historyDate)
+			}
+		case "f": // filter by user
+			// Cycle through users in current snapshot
+			users := m.getUniqueUsers()
+			if len(users) == 0 {
+				m.filterUser = ""
+			} else if m.filterUser == "" {
+				m.filterUser = users[0]
+			} else {
+				found := false
+				for i, u := range users {
+					if u == m.filterUser && i < len(users)-1 {
+						m.filterUser = users[i+1]
+						found = true
+						break
+					}
+				}
+				if !found {
+					m.filterUser = "" // clear filter
+				}
+			}
+			return m, nil
+		case "g": // filter by GPU
+			// Cycle through GPUs
+			if len(m.curr.GPUs) == 0 {
+				m.filterGPU = -1
+			} else if m.filterGPU == -1 {
+				m.filterGPU = m.curr.GPUs[0].Index
+			} else {
+				found := false
+				for i, gpu := range m.curr.GPUs {
+					if gpu.Index == m.filterGPU && i < len(m.curr.GPUs)-1 {
+						m.filterGPU = m.curr.GPUs[i+1].Index
+						found = true
+						break
+					}
+				}
+				if !found {
+					m.filterGPU = -1 // show all
+				}
+			}
+			return m, nil
+		case "m": // toggle sort by memory
+			m.sortByMem = !m.sortByMem
+			return m, nil
+		case "c": // clear all filters
+			m.filterUser = ""
+			m.filterGPU = -1
+			m.sortByMem = false
+			return m, nil
 		}
 	}
 	return m, nil
+}
+
+func (m model) getUniqueUsers() []string {
+	seen := make(map[string]bool)
+	var users []string
+	for _, proc := range m.curr.Procs {
+		if !seen[proc.User] {
+			seen[proc.User] = true
+			users = append(users, proc.User)
+		}
+	}
+	return users
+}
+
+func (m model) getFilteredSnapshot() types.Snapshot {
+	snap := m.curr
+
+	// Apply GPU filter
+	if m.filterGPU != -1 {
+		var filteredGPUs []types.GPU
+		for _, gpu := range snap.GPUs {
+			if gpu.Index == m.filterGPU {
+				filteredGPUs = append(filteredGPUs, gpu)
+			}
+		}
+		snap.GPUs = filteredGPUs
+
+		// Filter processes for this GPU
+		var filteredProcs []types.GPUProcess
+		for _, proc := range snap.Procs {
+			for _, gpu := range filteredGPUs {
+				if proc.GPUUUID == gpu.UUID {
+					filteredProcs = append(filteredProcs, proc)
+					break
+				}
+			}
+		}
+		snap.Procs = filteredProcs
+	}
+
+	// Apply user filter
+	if m.filterUser != "" {
+		var filteredProcs []types.GPUProcess
+		for _, proc := range snap.Procs {
+			if strings.EqualFold(proc.User, m.filterUser) {
+				filteredProcs = append(filteredProcs, proc)
+			}
+		}
+		snap.Procs = filteredProcs
+	}
+
+	return snap
 }
