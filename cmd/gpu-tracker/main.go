@@ -72,7 +72,9 @@ func exportToCSV(snap types.Snapshot, path string) error {
 	defer w.Flush()
 
 	// Write header
-	w.Write([]string{"Timestamp", "GPU Index", "GPU Name", "GPU Util %", "Mem Util %", "Mem Used MB", "Mem Total MB", "Temp C", "Power W", "PID", "Process", "User", "Proc Mem MB"})
+	if err := w.Write([]string{"Timestamp", "GPU Index", "GPU Name", "GPU Util %", "Mem Util %", "Mem Used MB", "Mem Total MB", "Temp C", "Power W", "PID", "Process", "User", "Proc Mem MB"}); err != nil {
+		return err
+	}
 
 	ts := snap.TS.Format(time.RFC3339)
 	for _, gpu := range snap.GPUs {
@@ -81,7 +83,7 @@ func exportToCSV(snap types.Snapshot, path string) error {
 		for _, proc := range snap.Procs {
 			if proc.GPUUUID == gpu.UUID {
 				hasProc = true
-				w.Write([]string{
+				if err := w.Write([]string{
 					ts,
 					fmt.Sprintf("%d", gpu.Index),
 					gpu.Name,
@@ -95,11 +97,13 @@ func exportToCSV(snap types.Snapshot, path string) error {
 					proc.ProcessName,
 					proc.User,
 					fmt.Sprintf("%.1f", proc.UsedMemMB),
-				})
+				}); err != nil {
+					return err
+				}
 			}
 		}
 		if !hasProc {
-			w.Write([]string{
+			if err := w.Write([]string{
 				ts,
 				fmt.Sprintf("%d", gpu.Index),
 				gpu.Name,
@@ -110,7 +114,9 @@ func exportToCSV(snap types.Snapshot, path string) error {
 				fmt.Sprintf("%.1f", gpu.TempC),
 				fmt.Sprintf("%.1f", gpu.PowerDrawW),
 				"", "", "", "",
-			})
+			}); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
